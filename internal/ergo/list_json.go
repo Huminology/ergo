@@ -13,13 +13,15 @@ const (
 )
 
 type listJSONDocument struct {
-	Version int            `json:"version"`
-	Items   []listJSONItem `json:"items"`
+	Version    int            `json:"version"`
+	Generation uint64         `json:"generation"`
+	Items      []listJSONItem `json:"items"`
 }
 
 type listJSONDocumentV2 struct {
-	Version int              `json:"version"`
-	Items   []map[string]any `json:"items"`
+	Version    int              `json:"version"`
+	Generation uint64           `json:"generation"`
+	Items      []map[string]any `json:"items"`
 }
 
 type listJSONItem struct {
@@ -38,8 +40,9 @@ func RenderListJSON(w io.Writer, outcome ListOutcome) error {
 		return renderListJSONV2(w, outcome)
 	}
 	document := listJSONDocument{
-		Version: listJSONVersion,
-		Items:   make([]listJSONItem, 0),
+		Version:    listJSONVersion,
+		Generation: outcome.Generation,
+		Items:      make([]listJSONItem, 0),
 	}
 	appendNodesAsJSON(&document.Items, outcome.Roots, outcome.Graph)
 	encoder := json.NewEncoder(w)
@@ -49,8 +52,9 @@ func RenderListJSON(w io.Writer, outcome ListOutcome) error {
 
 func renderListJSONV2(w io.Writer, outcome ListOutcome) error {
 	document := listJSONDocumentV2{
-		Version: listJSONVersionEnriched,
-		Items:   make([]map[string]any, 0),
+		Version:    listJSONVersionEnriched,
+		Generation: outcome.Generation,
+		Items:      make([]map[string]any, 0),
 	}
 	appendNodesAsJSONV2(&document.Items, outcome.Roots, outcome.Graph, outcome.Options)
 	encoder := json.NewEncoder(w)

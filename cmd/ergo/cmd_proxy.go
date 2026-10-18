@@ -72,6 +72,68 @@ func tryProxy(
 	return true, errors.New("server request failed")
 }
 
+func tryProxyWatch(
+	cmd *cobra.Command,
+	streams Streams,
+	options *ergo.RepositoryOptions,
+	noServer *bool,
+	color *colorMode,
+	method string,
+	payload any,
+) (handled bool, err error) {
+	if noServer != nil && *noServer {
+		return false, nil
+	}
+	if !ergo.SocketLive(*options) {
+		return false, nil
+	}
+	projectDir, err := ergo.ResolveProjectDir(*options)
+	if err != nil {
+		return false, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return false, err
+	}
+	render := commandRender(cmd, streams, *color)
+	request := ergo.WireRequest{
+		Method:  method,
+		Dir:     projectDir,
+		Color:   render.Color,
+		Width:   render.Width,
+		Client:  ergo.BuildWireClient(),
+		Payload: raw,
+	}
+	watchErr := ergo.ProxyWatch(*options, request, func(response ergo.WireResponse) error {
+		if response.Stderr != "" {
+			if _, err := io.WriteString(cmd.ErrOrStderr(), response.Stderr); err != nil {
+				return err
+			}
+		}
+		if !response.OK {
+			if response.Stderr != "" {
+				return errors.New(response.Stderr)
+			}
+			return errors.New("server request failed")
+		}
+		if response.Stdout != "" {
+			if _, err := io.WriteString(cmd.OutOrStdout(), response.Stdout); err != nil {
+				return err
+			}
+			if !strings.HasSuffix(response.Stdout, "\n") {
+				if _, err := io.WriteString(cmd.OutOrStdout(), "\n"); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if watchErr != nil {
+		return true, watchErr
+	}
+	return true, nil
+}
+
 func serveCmd(app *ergo.Application, options *ergo.RepositoryOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",

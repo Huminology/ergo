@@ -36,8 +36,9 @@ func TestRenderListJSONSchemaAndOrder(t *testing.T) {
 	}
 
 	var document struct {
-		Version int `json:"version"`
-		Items   []struct {
+		Version    int    `json:"version"`
+		Generation uint64 `json:"generation"`
+		Items      []struct {
 			ID     string `json:"id"`
 			Kind   string `json:"kind"`
 			State  string `json:"state"`
@@ -48,7 +49,7 @@ func TestRenderListJSONSchemaAndOrder(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &document); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
-	if document.Version != 1 || len(document.Items) != 4 {
+	if document.Version != 1 || document.Generation != 0 || len(document.Items) != 4 {
 		t.Fatalf("document = %#v", document)
 	}
 	if got := []string{document.Items[0].ID, document.Items[1].ID, document.Items[2].ID, document.Items[3].ID}; strings.Join(got, ",") != "EPIC01,TASK01,TASK02,TASK03" {
@@ -116,7 +117,7 @@ func TestRenderListJSONEmptyItemsAndWriterError(t *testing.T) {
 	if err := RenderListJSON(&output, ListOutcome{}); err != nil {
 		t.Fatalf("RenderListJSON: %v", err)
 	}
-	if output.String() != "{\"version\":1,\"items\":[]}\n" {
+	if output.String() != "{\"version\":1,\"generation\":0,\"items\":[]}\n" {
 		t.Fatalf("empty output = %q", output.String())
 	}
 
@@ -182,6 +183,9 @@ func TestRenderListJSONWithBody(t *testing.T) {
 	listed, err := app.List(ListOptions{OmitJournal: true, JSONWithBody: true})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if listed.Generation != 1 {
+		t.Fatalf("generation = %d, want 1", listed.Generation)
 	}
 	var output bytes.Buffer
 	if err := RenderListJSON(&output, listed); err != nil {

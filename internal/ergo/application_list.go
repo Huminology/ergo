@@ -3,6 +3,7 @@ package ergo
 type ListRequest = ListOptions
 type ListOutcome struct {
 	Options      ListOptions
+	Generation   uint64
 	Graph        *Graph
 	Roots        []*treeNode
 	AllTasks     []*Task
@@ -19,4 +20,13 @@ func (a *Application) List(request ListRequest) (ListOutcome, error) {
 	}
 	defer session.Close()
 	return session.List(request)
+}
+
+func (a *Application) Generation() (uint64, error) {
+	session, err := a.OpenSession()
+	if err != nil {
+		return 0, err
+	}
+	defer session.Close()
+	return session.Generation()
 }

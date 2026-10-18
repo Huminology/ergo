@@ -45,12 +45,18 @@ func (s *Session) BatchShow(request BatchShowRequest) (BatchShowOutcome, error) 
 }
 
 func (s *Session) batchShowLocked(request BatchShowRequest) (BatchShowOutcome, error) {
+	return s.batchShowLockedOpt(request, false)
+}
+
+func (s *Session) batchShowLockedOpt(request BatchShowRequest, alreadyFresh bool) (BatchShowOutcome, error) {
 	ids, err := normalizeBatchShowIDs(request.IDs)
 	if err != nil {
 		return BatchShowOutcome{}, err
 	}
-	if err := s.ensureFreshLocked(); err != nil {
-		return BatchShowOutcome{}, err
+	if !alreadyFresh {
+		if err := s.ensureFreshLocked(); err != nil {
+			return BatchShowOutcome{}, err
+		}
 	}
 	withBody := request.WithBody
 	if !withBody {

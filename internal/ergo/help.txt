@@ -25,7 +25,7 @@ attempt finished without satisfying the objective.
   init [dir]                                  initialize an Ergo backlog
   new task "<title>" [--epic <id>] [--draft]  create a task; optional stdin sets its body
   new epic "<title>" --file <path> [--draft]  create an epic and tasks; optional stdin sets epic body
-  list [--epic <id>] [--ready | --all] [--json] [--with-meta] [--with-body]  list work
+  list [--epic <id>] [--ready | --all | --open-forests] [--json] [--with-meta] [--with-body]  list work
   batch-show [--json] <id> [<id>…]              show many tasks as one JSON document
   show <id> [--body]                          show a task or epic, or only its body
   claim [<id>] --agent <identity>             claim chosen or ready work
@@ -45,6 +45,8 @@ attempt finished without satisfying the objective.
   info                                        print executable and active backlog information
   prune [--yes]                               preview or apply pruning
   compact                                     compact the event log
+  generation                                  print the resident serve generation
+  watch-generation                            stream serve generation until interrupted
   quickstart                                  print the complete guide
   version                                     print the build version
 

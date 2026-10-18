@@ -1,6 +1,7 @@
 package ergo
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,13 +18,13 @@ const (
 )
 
 type logFingerprint struct {
-	backlogDev   uint64
-	backlogIno   uint64
-	backlogSize  int64
-	journalDev   uint64
-	journalIno   uint64
-	journalSize  int64
-	validBytes   int64
+	backlogDev  uint64
+	backlogIno  uint64
+	backlogSize int64
+	journalDev  uint64
+	journalIno  uint64
+	journalSize int64
+	validBytes  int64
 }
 
 // Session holds a warm in-memory graph for one opened repository.
@@ -34,7 +35,9 @@ type Session struct {
 	eventRead   eventLogRead
 	journal     []JournalEntry
 	fingerprint logFingerprint
-	mu          sync.Mutex
+	mu          sync.RWMutex
+	generation  uint64
+	watchers    []chan uint64
 }
 
 func (a *Application) OpenSession() (*Session, error) {
@@ -46,6 +49,7 @@ func (a *Application) OpenSession() (*Session, error) {
 	if err := session.reload(); err != nil {
 		return nil, classifyRepositoryError(err)
 	}
+	session.generation = 1
 	return session, nil
 }
 
@@ -128,7 +132,110 @@ func (s *Session) ensureFreshLocked() error {
 	if current == s.fingerprint {
 		return nil
 	}
-	return s.reload()
+	if err := s.reload(); err != nil {
+		return err
+	}
+	s.bumpGenerationLocked()
+	return nil
+}
+
+func (s *Session) logFingerprintStale() (bool, error) {
+	current, err := captureLogFingerprint(s.repo.eventsPath, s.repo.journalPath, s.eventRead.validBytes)
+	if err != nil {
+		return false, err
+	}
+	return current != s.fingerprint, nil
+}
+
+func (s *Session) bumpGenerationLocked() {
+	s.generation++
+	n := s.generation
+	for _, ch := range s.watchers {
+		select {
+		case ch <- n:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- n:
+			default:
+			}
+		}
+	}
+}
+
+func (s *Session) addWatcher() chan uint64 {
+	ch := make(chan uint64, 1)
+	s.mu.Lock()
+	s.watchers = append(s.watchers, ch)
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *Session) removeWatcher(ch chan uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.watchers[:0]
+	for _, w := range s.watchers {
+		if w != ch {
+			kept = append(kept, w)
+		}
+	}
+	s.watchers = kept
+}
+
+// refreshForRead holds RLock on success. Caller must RUnlock.
+func (s *Session) refreshForRead(hydrateJournal bool) error {
+	s.mu.RLock()
+	stale, err := s.logFingerprintStale()
+	needJournal := hydrateJournal && s.journal == nil
+	needPrep := s.graph != nil && !s.graph.derivedCached
+	if err != nil {
+		s.mu.RUnlock()
+		return err
+	}
+	if !stale && !needJournal && !needPrep {
+		return nil
+	}
+	s.mu.RUnlock()
+	s.mu.Lock()
+	if err := s.ensureFreshLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if hydrateJournal {
+		if err := s.ensureJournal(); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	if s.graph != nil {
+		s.graph.prepareDerivedQueries()
+	}
+	s.mu.Unlock()
+	s.mu.RLock()
+	return nil
+}
+
+func (s *Session) Generation() (uint64, error) {
+	if err := s.refreshForRead(false); err != nil {
+		return 0, err
+	}
+	n := s.generation
+	s.mu.RUnlock()
+	return n, nil
+}
+
+func formatGenerationJSON(n uint64) (string, error) {
+	payload, err := json.Marshal(struct {
+		Generation uint64 `json:"generation"`
+	}{Generation: n})
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
 }
 
 func (s *Session) updateLoaded(fn func(*Graph) ([]Event, error)) (UpdateOutcome, error) {
@@ -151,6 +258,7 @@ func (s *Session) updateLoadedLocked(fn func(*Graph) ([]Event, error)) (UpdateOu
 	if err != nil {
 		return UpdateOutcome{}, err
 	}
+	s.bumpGenerationLocked()
 	return outcome, nil
 }
 
@@ -175,6 +283,7 @@ func (s *Session) updateLoadedWithJournalLocked(fn func(*Graph) ([]Event, []Jour
 	if err != nil {
 		return UpdateOutcome{}, err
 	}
+	s.bumpGenerationLocked()
 	return outcome, nil
 }
 
@@ -226,11 +335,23 @@ func (s *Session) List(request ListRequest) (ListOutcome, error) {
 }
 
 func (s *Session) listLocked(request ListRequest) (ListOutcome, error) {
+	return s.listLockedOpt(request, false)
+}
+
+func (s *Session) listLockedOpt(request ListRequest, alreadyFresh bool) (ListOutcome, error) {
 	if request.ReadyOnly && request.ShowAll {
 		return ListOutcome{}, classified(ErrorUsage, errors.New("conflicting flags: --ready and --all"))
 	}
-	if err := s.ensureFreshLocked(); err != nil {
-		return ListOutcome{}, err
+	if request.OpenForests && request.ReadyOnly {
+		return ListOutcome{}, classified(ErrorUsage, errors.New("conflicting flags: --ready and --open-forests"))
+	}
+	if request.OpenForests && request.ShowAll {
+		return ListOutcome{}, classified(ErrorUsage, errors.New("conflicting flags: --all and --open-forests"))
+	}
+	if !alreadyFresh {
+		if err := s.ensureFreshLocked(); err != nil {
+			return ListOutcome{}, err
+		}
 	}
 	if !request.OmitJournal {
 		if err := s.ensureJournal(); err != nil {
@@ -247,8 +368,8 @@ func (s *Session) listLocked(request ListRequest) (ListOutcome, error) {
 	}
 	all := collectNonContainerTasks(graph)
 	outcome := ListOutcome{
-		Options: request, Graph: graph,
-		Roots:       buildListRoots(graph, request.ShowAll, request.ReadyOnly, request.EpicID),
+		Options: request, Graph: graph, Generation: s.generation,
+		Roots:       buildListRoots(graph, request),
 		AllTasks:    all,
 		ActiveTasks: filterActiveTasks(all), ReadyTasks: filterReadyTasks(all, graph),
 	}
@@ -266,12 +387,18 @@ func (s *Session) Show(request ShowRequest) (ShowOutcome, error) {
 }
 
 func (s *Session) showLocked(request ShowRequest) (ShowOutcome, error) {
+	return s.showLockedOpt(request, false)
+}
+
+func (s *Session) showLockedOpt(request ShowRequest, alreadyFresh bool) (ShowOutcome, error) {
 	id := strings.TrimSpace(request.ID)
 	if id == "" {
 		return ShowOutcome{}, classified(ErrorUsage, errors.New("usage: ergo show <id>"))
 	}
-	if err := s.ensureFreshLocked(); err != nil {
-		return ShowOutcome{}, err
+	if !alreadyFresh {
+		if err := s.ensureFreshLocked(); err != nil {
+			return ShowOutcome{}, err
+		}
 	}
 	if err := s.ensureJournal(); err != nil {
 		return ShowOutcome{}, err
@@ -304,12 +431,18 @@ func (s *Session) ShowBody(request ShowBodyRequest) (ShowBodyOutcome, error) {
 }
 
 func (s *Session) showBodyLocked(request ShowBodyRequest) (ShowBodyOutcome, error) {
+	return s.showBodyLockedOpt(request, false)
+}
+
+func (s *Session) showBodyLockedOpt(request ShowBodyRequest, alreadyFresh bool) (ShowBodyOutcome, error) {
 	id := strings.TrimSpace(request.ID)
 	if id == "" {
 		return ShowBodyOutcome{}, classified(ErrorUsage, errors.New("usage: ergo show <id> --body"))
 	}
-	if err := s.ensureFreshLocked(); err != nil {
-		return ShowBodyOutcome{}, err
+	if !alreadyFresh {
+		if err := s.ensureFreshLocked(); err != nil {
+			return ShowBodyOutcome{}, err
+		}
 	}
 	graph := s.graph
 	if _, ok := graph.Tombstones[id]; ok {
@@ -620,6 +753,7 @@ func (s *Session) compactLocked() (CompactOutcome, error) {
 	if err := s.reload(); err != nil {
 		return CompactOutcome{}, err
 	}
+	s.bumpGenerationLocked()
 	return outcome, nil
 }
 
@@ -645,6 +779,7 @@ func (s *Session) pruneLocked(request PruneRequest) (PruneOutcome, error) {
 		if err := s.reload(); err != nil {
 			return PruneOutcome{}, err
 		}
+		s.bumpGenerationLocked()
 	}
 	return PruneOutcome{Confirmed: request.Confirm, Items: plan.Items, JournalEntries: plan.JournalEntries}, nil
 }

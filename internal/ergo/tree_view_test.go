@@ -226,7 +226,7 @@ func TestHideDoneEpicsInActiveView(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	roots := buildListRoots(graph, false, false, "")
+	roots := buildListRoots(graph, ListOptions{})
 	renderTreeView(&buf, roots, graph, false)
 
 	output := buf.String()
@@ -247,7 +247,7 @@ func TestRenderTreeRootRowsNoConnectors(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	roots := buildListRoots(graph, false, false, "")
+	roots := buildListRoots(graph, ListOptions{})
 	renderTreeView(&buf, roots, graph, false)
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -296,7 +296,7 @@ func TestRenderTreeUsesLiteralAgentStatuses(t *testing.T) {
 		},
 		Deps: map[string]map[string]struct{}{},
 	}
-	roots := buildListRoots(graph, false, false, "")
+	roots := buildListRoots(graph, ListOptions{})
 	var buf bytes.Buffer
 	renderTreeView(&buf, roots, graph, false)
 	output := buf.String()
@@ -395,7 +395,7 @@ func TestReadyListOrderMatchesAutomaticClaim(t *testing.T) {
 		Deps: map[string]map[string]struct{}{},
 	}
 
-	roots := buildListRoots(graph, false, true, "")
+	roots := buildListRoots(graph, ListOptions{ReadyOnly: true})
 	if len(roots) != 1 || len(roots[0].children) != 2 {
 		t.Fatalf("unexpected ready tree: %#v", roots)
 	}

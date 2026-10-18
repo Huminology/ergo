@@ -21,7 +21,8 @@ import (
 var publicCommandPaths = []string{
 	"init", "new", "new task", "new epic", "list", "show", "claim", "done",
 	"fail", "block", "cancel", "open", "result", "title", "body", "move", "sequence",
-	"unsequence", "where", "info", "compact", "prune", "quickstart", "version", "serve",
+	"unsequence", "where", "info", "compact", "prune", "generation", "watch-generation",
+	"quickstart", "version", "serve",
 	"batch-show",
 }
 
@@ -44,11 +45,12 @@ func TestRootHelpIsTheFrontDoor(t *testing.T) {
 
 	for _, signature := range []string{
 		"init [dir]", `new task "<title>"`, `new epic "<title>" --file <path>`,
-		"list [--epic <id>] [--ready | --all] [--json] [--with-meta] [--with-body]", "show <id> [--body]", "claim [<id>]", "done <id>",
+		"list [--epic <id>] [--ready | --all | --open-forests] [--json] [--with-meta] [--with-body]", "show <id> [--body]", "claim [<id>]", "done <id>",
 		"batch-show [--json] <id> [<id>…]",
 		"block <id>", "cancel <id>", "open <id>", `result <id> "<text>"`, "title <id> <title>",
 		"body <id> [--append]", "move <id> <epic-id>", "sequence <A> <B>",
 		"unsequence <A> <B>", "where", "prune [--yes]", "compact",
+		"generation", "watch-generation",
 		"quickstart", "version",
 	} {
 		if !strings.Contains(help, "\n  "+signature) {

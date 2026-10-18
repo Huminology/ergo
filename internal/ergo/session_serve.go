@@ -52,10 +52,34 @@ func ServeSession(session *Session, conn net.Conn) {
 		return
 	}
 
+	if request.Method == "watch" {
+		serveWatch(session, conn, client, start)
+		return
+	}
+
+	readJSON, hydrateJournal := classifyServeRead(request)
+	if readJSON {
+		if err := session.refreshForRead(hydrateJournal); err != nil {
+			logServeRequest(client, method, start, false, err.Error())
+			_ = writeWireError(conn, err.Error(), 1)
+			return
+		}
+		stdout, stderr, code, err := dispatchSessionRequestLocked(session, request, true)
+		session.mu.RUnlock()
+		if err != nil {
+			logServeRequest(client, method, start, false, err.Error())
+			_ = writeWireError(conn, err.Error(), code)
+			return
+		}
+		logServeRequest(client, method, start, true, "")
+		_ = writeWireOK(conn, stdout, stderr, code)
+		return
+	}
+
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	stdout, stderr, code, err := dispatchSessionRequestLocked(session, request)
+	stdout, stderr, code, err := dispatchSessionRequestLocked(session, request, false)
 	if err != nil {
 		logServeRequest(client, method, start, false, err.Error())
 		_ = writeWireError(conn, err.Error(), code)
@@ -63,6 +87,72 @@ func ServeSession(session *Session, conn net.Conn) {
 	}
 	logServeRequest(client, method, start, true, "")
 	_ = writeWireOK(conn, stdout, stderr, code)
+}
+
+func classifyServeRead(request WireRequest) (readJSON bool, hydrateJournal bool) {
+	switch request.Method {
+	case "generation", "show_body", "batch_show":
+		return true, false
+	case "show":
+		return true, true
+	case "list":
+		payload, err := decodePayload[ListRequest](request.Payload)
+		if err != nil {
+			return false, false
+		}
+		return payload.OmitJournal, false
+	default:
+		return false, false
+	}
+}
+
+func serveWatch(session *Session, conn net.Conn, client WireClient, start time.Time) {
+	ch := session.addWatcher()
+	defer session.removeWatcher(ch)
+
+	if err := session.refreshForRead(false); err != nil {
+		logServeRequest(client, "watch", start, false, err.Error())
+		_ = writeWireError(conn, err.Error(), 1)
+		return
+	}
+	n := session.generation
+	session.mu.RUnlock()
+	stdout, err := formatGenerationJSON(n)
+	if err != nil {
+		logServeRequest(client, "watch", start, false, err.Error())
+		_ = writeWireError(conn, err.Error(), 1)
+		return
+	}
+	if err := writeWireOK(conn, stdout, "", 0); err != nil {
+		logServeRequest(client, "watch", start, false, err.Error())
+		return
+	}
+	logServeRequest(client, "watch", start, true, "")
+
+	disconnected := make(chan struct{})
+	go func() {
+		buf := make([]byte, 1)
+		_, _ = conn.Read(buf)
+		close(disconnected)
+	}()
+
+	for {
+		select {
+		case <-disconnected:
+			return
+		case n, ok := <-ch:
+			if !ok {
+				return
+			}
+			stdout, err := formatGenerationJSON(n)
+			if err != nil {
+				return
+			}
+			if err := writeWireOK(conn, stdout, "", 0); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func logServeRequest(client WireClient, method string, start time.Time, ok bool, detail string) {
@@ -86,19 +176,26 @@ func isBenignWireClose(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
 }
 
-func dispatchSessionRequestLocked(session *Session, request WireRequest) (stdout, stderr string, code int, err error) {
+func dispatchSessionRequestLocked(session *Session, request WireRequest, alreadyFresh bool) (stdout, stderr string, code int, err error) {
 	render := RenderOptions{Writer: &bytes.Buffer{}, Color: request.Color, Width: request.Width}
 	if render.Width <= 0 {
 		render.Width = 80
 	}
 
 	switch request.Method {
+	case "generation":
+		stdout, err := formatGenerationJSON(session.generation)
+		if err != nil {
+			return "", "", 1, err
+		}
+		return stdout, "", 0, nil
+
 	case "list":
 		payload, err := decodePayload[ListRequest](request.Payload)
 		if err != nil {
 			return "", "", 1, err
 		}
-		out, err := session.listLocked(payload)
+		out, err := session.listLockedOpt(payload, alreadyFresh)
 		if err != nil {
 			return "", "", 1, err
 		}
@@ -116,7 +213,7 @@ func dispatchSessionRequestLocked(session *Session, request WireRequest) (stdout
 		if err != nil {
 			return "", "", 1, err
 		}
-		out, err := session.showLocked(payload)
+		out, err := session.showLockedOpt(payload, alreadyFresh)
 		if err != nil {
 			return "", "", 1, err
 		}
@@ -128,7 +225,7 @@ func dispatchSessionRequestLocked(session *Session, request WireRequest) (stdout
 		if err != nil {
 			return "", "", 1, err
 		}
-		out, err := session.showBodyLocked(payload)
+		out, err := session.showBodyLockedOpt(payload, alreadyFresh)
 		if err != nil {
 			return "", "", 1, err
 		}
@@ -276,7 +373,7 @@ func dispatchSessionRequestLocked(session *Session, request WireRequest) (stdout
 		if err != nil {
 			return "", "", 1, err
 		}
-		out, err := session.batchShowLocked(payload)
+		out, err := session.batchShowLockedOpt(payload, alreadyFresh)
 		if err != nil {
 			return "", "", 1, err
 		}
@@ -318,6 +415,42 @@ func ProxyRequest(options RepositoryOptions, request WireRequest) (WireResponse,
 		return WireResponse{}, err
 	}
 	return readWireResponse(conn)
+}
+
+func ProxyWatch(options RepositoryOptions, request WireRequest, emit func(WireResponse) error) error {
+	projectDir, err := ResolveProjectDir(options)
+	if err != nil {
+		return err
+	}
+	ergoDataDir, err := ergoDir(options)
+	if err != nil {
+		return err
+	}
+	conn, err := net.Dial("unix", SocketPath(ergoDataDir))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	request.V = protocolVersion
+	request.Dir = projectDir
+	if err := writeWireRequest(conn, request); err != nil {
+		return err
+	}
+	for {
+		response, err := readWireResponse(conn)
+		if err != nil {
+			if isBenignWireClose(err) {
+				return nil
+			}
+			return err
+		}
+		if err := emit(response); err != nil {
+			return err
+		}
+		if !response.OK {
+			return nil
+		}
+	}
 }
 
 func ListenUnix(path string) (net.Listener, error) {

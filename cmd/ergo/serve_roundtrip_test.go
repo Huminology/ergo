@@ -131,6 +131,51 @@ func TestServeRoundtripMatchesNoServer(t *testing.T) {
 	}
 }
 
+func TestServeGenerationAndListJSONIncludeGeneration(t *testing.T) {
+	dir := setupErgo(t)
+	serve := exec.Command(ergoBinary, "serve")
+	serve.Dir = dir
+	if err := serve.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer stopServe(t, serve)
+	time.Sleep(200 * time.Millisecond)
+
+	stdout, stderr, code := runErgo(t, dir, "", "generation")
+	if code != 0 {
+		t.Fatalf("generation: %s", stderr)
+	}
+	var gen struct {
+		Generation uint64 `json:"generation"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &gen); err != nil {
+		t.Fatalf("generation json %q: %v", stdout, err)
+	}
+	if gen.Generation < 1 {
+		t.Fatalf("generation = %d", gen.Generation)
+	}
+
+	listed, listErr, code := runErgo(t, dir, "", "list", "--json")
+	if code != 0 {
+		t.Fatalf("list: %s", listErr)
+	}
+	var document struct {
+		Generation uint64 `json:"generation"`
+		Items      []any  `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(listed), &document); err != nil {
+		t.Fatalf("list json: %v", err)
+	}
+	if document.Generation != gen.Generation {
+		t.Fatalf("list generation %d != generation %d", document.Generation, gen.Generation)
+	}
+
+	direct, _, code := runErgo(t, dir, "", "--no-server", "watch-generation")
+	if code == 0 {
+		t.Fatalf("expected watch-generation without serve to fail, stdout=%q", direct)
+	}
+}
+
 func TestSecondServeFailsWhenSocketLive(t *testing.T) {
 	dir := setupErgo(t)
 	first := exec.Command(ergoBinary, "serve")

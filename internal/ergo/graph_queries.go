@@ -189,6 +189,9 @@ func (graph *Graph) isReadyUncached(id string) bool {
 // prepareDerivedQueries calculates stable list-time graph projections once.
 // Mutating code never enables this cache, so direct graph changes stay visible.
 func (graph *Graph) prepareDerivedQueries() {
+	if graph.derivedCached {
+		return
+	}
 	graph.completeByID = make(map[string]bool, len(graph.Tasks))
 	graph.blockersByID = make(map[string][]string, len(graph.Tasks))
 	graph.readyByID = make(map[string]bool, len(graph.Tasks))

@@ -9,6 +9,7 @@ type ListOptions struct {
 	EpicID       string
 	ReadyOnly    bool
 	ShowAll      bool
+	OpenForests  bool
 	OmitJournal  bool
 	JSONWithMeta bool
 	JSONWithBody bool
@@ -27,6 +28,7 @@ func RenderList(w io.Writer, outcome ListOutcome, useColor bool, width int) {
 	epicID := outcome.Options.EpicID
 	readyOnly := outcome.Options.ReadyOnly
 	showAll := outcome.Options.ShowAll
+	openForests := outcome.Options.OpenForests
 	graph, roots := outcome.Graph, outcome.Roots
 	printSummary := func(stats taskStats, buckets []summaryBucket, addSpacing bool) {
 		renderSummary(w, stats, useColor, buckets, addSpacing)
@@ -81,13 +83,17 @@ func RenderList(w io.Writer, outcome ListOutcome, useColor bool, width int) {
 		stats := computeStatsForTasks(readyTasks, graph)
 		printSummary(stats, []summaryBucket{summaryReady}, true)
 		return
-	case showAll:
+	case showAll, openForests:
 		if len(allTasks) == 0 && len(roots) == 0 {
 			fmt.Fprintln(w, "No tasks.")
 			return
 		}
 		renderTreeView(w, roots, graph, useColor, width)
-		stats := computeStatsForTasks(allTasks, graph)
+		summaryTasks := allTasks
+		if openForests && !showAll {
+			summaryTasks = collectTasksFromNodes(roots)
+		}
+		stats := computeStatsForTasks(summaryTasks, graph)
 		printSummary(stats, []summaryBucket{summaryReady, summaryDraft, summaryInProgress, summaryBlocked, summaryWaiting, summaryFailed, summaryError, summaryDone, summaryCanceled}, true)
 		return
 	default:

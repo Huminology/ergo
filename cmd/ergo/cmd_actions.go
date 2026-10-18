@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -124,10 +125,11 @@ func addCommands(root *cobra.Command, base *ergo.Application, streams Streams, o
 	}
 	newCmd.AddCommand(newTaskCmd, newEpicCmd)
 
-	listCmd := &cobra.Command{Use: "list", Short: "List tasks", Args: noArgs("list [--epic <id>] [--ready | --all]")}
+	listCmd := &cobra.Command{Use: "list", Short: "List tasks", Args: noArgs("list [--epic <id>] [--ready | --all | --open-forests]")}
 	listCmd.Flags().String("epic", "", "Filter by epic ID")
-	listCmd.Flags().Bool("ready", false, "Show only ready tasks (conflicts with --all)")
-	listCmd.Flags().Bool("all", false, "Show all tasks, including canceled/done (conflicts with --ready)")
+	listCmd.Flags().Bool("ready", false, "Show only ready tasks (conflicts with --all and --open-forests)")
+	listCmd.Flags().Bool("all", false, "Show all tasks, including canceled/done (conflicts with --ready and --open-forests)")
+	listCmd.Flags().Bool("open-forests", false, "Live top-level epics plus nested forests, including done descendants (conflicts with --ready and --all)")
 	listCmd.Flags().Bool("json", false, "Write a versioned JSON task listing")
 	listCmd.Flags().Bool("with-meta", false, "With --json, include timestamps, claim, and depends_on (list JSON version 2)")
 	listCmd.Flags().Bool("with-body", false, "With --json, include stored body bytes (list JSON version 2)")
@@ -135,6 +137,7 @@ func addCommands(root *cobra.Command, base *ergo.Application, streams Streams, o
 		epic, _ := cmd.Flags().GetString("epic")
 		ready, _ := cmd.Flags().GetBool("ready")
 		all, _ := cmd.Flags().GetBool("all")
+		openForests, _ := cmd.Flags().GetBool("open-forests")
 		jsonOutput, _ := cmd.Flags().GetBool("json")
 		withMeta, _ := cmd.Flags().GetBool("with-meta")
 		withBody, _ := cmd.Flags().GetBool("with-body")
@@ -142,7 +145,7 @@ func addCommands(root *cobra.Command, base *ergo.Application, streams Streams, o
 			return err
 		}
 		req := ergo.ListRequest{
-			EpicID: epic, ReadyOnly: ready, ShowAll: all, OmitJournal: jsonOutput,
+			EpicID: epic, ReadyOnly: ready, ShowAll: all, OpenForests: openForests, OmitJournal: jsonOutput,
 			JSONWithMeta: withMeta, JSONWithBody: withBody,
 		}
 		if handled, err := tryProxy(cmd, streams, options, noServer, color, "list", req, ""); handled {
@@ -371,6 +374,31 @@ func addCommands(root *cobra.Command, base *ergo.Application, streams Streams, o
 		}
 		return err
 	}
+	generationCmd := &cobra.Command{Use: "generation", Short: "Print the resident serve generation", Args: noArgs("generation")}
+	generationCmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		if handled, err := tryProxy(cmd, streams, options, noServer, color, "generation", struct{}{}, ""); handled {
+			return err
+		}
+		n, err := app().Generation()
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(struct {
+			Generation uint64 `json:"generation"`
+		}{Generation: n})
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+		return err
+	}
+	watchGenerationCmd := &cobra.Command{Use: "watch-generation", Short: "Stream serve generation until interrupted", Args: noArgs("watch-generation")}
+	watchGenerationCmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		if handled, err := tryProxyWatch(cmd, streams, options, noServer, color, "watch", struct{}{}); handled {
+			return err
+		}
+		return errors.New("watch requires ergo serve")
+	}
 	quickCmd := &cobra.Command{Use: "quickstart", Short: "Show quickstart guide", Args: noArgs("quickstart")}
 	quickCmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		ergo.RenderQuickstart(cmd.OutOrStdout(), app().Quickstart(ergo.QuickstartRequest{Color: render(cmd).Color}))
@@ -384,7 +412,7 @@ func addCommands(root *cobra.Command, base *ergo.Application, streams Streams, o
 	root.AddCommand(initCmd, newCmd, listCmd, showCmd, claimCmd,
 		lifecycle("done", "Mark a task done"), lifecycle("fail", "Mark finished work failed"), lifecycle("block", "Mark a task blocked"), lifecycle("cancel", "Cancel a task"), lifecycle("open", "Return draft or blocked work to todo"),
 		resultCmd, titleCmd, bodyCmd, moveCmd, sequence("sequence", "link", "Enforce task order (A then B then C)"), sequence("unsequence", "unlink", "Remove task order (A then B then C)"),
-		whereCmd, infoCmd, compactCmd, pruneCmd, quickCmd, versionCmd, serveCmd(app(), options), batchShowCmd(app, streams, options, noServer, color))
+		whereCmd, infoCmd, compactCmd, pruneCmd, generationCmd, watchGenerationCmd, quickCmd, versionCmd, serveCmd(app(), options), batchShowCmd(app, streams, options, noServer, color))
 }
 
 func hasString(values []string, target string) bool {

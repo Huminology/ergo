@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Resident serve exposes a monotonic in-memory generation: CLI `generation` /
+  `watch-generation`, Unix methods `generation` and `watch`, and a `generation`
+  field on list JSON. JSON list/show reads use `sync.RWMutex` so a body-heavy
+  ready list does not exclude other JSON lists.
+- `list --open-forests` keeps non-terminal top-level epics (and live orphans)
+  plus nested forests discovered from task-body epic references, including done
+  descendants. Closed top-level forests are omitted. Conflicts with `--ready`
+  and `--all`.
+
 ## [6.0.1] - 2026-08-24
 
 ### Fixed

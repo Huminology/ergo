@@ -1043,7 +1043,7 @@ func TestListJSONEmptyAndPopulated(t *testing.T) {
 	dir := setupErgo(t)
 
 	stdout, stderr, code := runErgo(t, dir, "", "list", "--json")
-	if code != 0 || stderr != "" || stdout != "{\"version\":1,\"items\":[]}\n" {
+	if code != 0 || stderr != "" || stdout != "{\"version\":1,\"generation\":1,\"items\":[]}\n" {
 		t.Fatalf("empty list: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
